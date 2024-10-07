@@ -1,0 +1,442 @@
+---
+title: "Wine Sale Forecasting"
+output: md_document
+date: "2024-10-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1 Load required Libraries
+```{r}
+library(openxlsx)  
+library(timetk)  
+library(dplyr)  
+library(lubridate)  
+library(recipes)  
+library(rsample)  
+library(parsnip)  
+library(workflows)  
+library(forecastML)  
+library(corrplot)  
+library(doParallel)  
+library(timeDate)  
+library(astsa)  
+library(ggplot2)  
+library(forecast)  
+library(bsts)  
+library(nlme)  
+library(splines) 
+library(caret)
+```
+
+
+## 2 Set Parallel Processing
+```{r}
+# setting up parallel processing
+registerDoSEQ()
+cl = makePSOCKcluster(4)
+registerDoParallel(cl)
+```
+
+## 3 Function for Performance Metrics
+```{r}
+Metrics.fun = function(x,y) {
+  AE= abs(x-y)  # Absolute difference
+  AE.mean = mean(AE)  # Mean AE
+  SE = AE^2  # Squared AE
+  MSE = mean(SE)  # Mean of squared error
+  RMSE = sqrt(MSE) # Root of MSE
+  RMSE.se = sd(SE) # Standard error of SE
+  Metrics = data.frame(MAE = AE.mean,
+                       RMSE=RMSE)
+  Metrics
+}
+```
+
+
+## 4 Load Dataset
+```{r}
+setwd("C:\\Users\\YCHEN\\Git\\Weather on wine sales")
+
+load("Weekly wine sales data.RData")
+str(ApothicUnit)
+
+```
+
+## 5 Exploratory Data Analysis (EDA)
+```{r}
+ApothicUnit %>%
+  plot_time_series(DATE,apothicPremiumUnit,
+                   .interactive=F,
+                   .facet_scales="free",
+                   .color_var=year(DATE),
+                   .facet_ncol=2,
+                   .x_lab="Date",
+                   .y_lab="Apothic (Unit)")+
+  labs(title = "Fig. 1 Weekly Wine Sales")
+```
+Note the uptrending of sales over the years.
+
+```{r}
+ApothicUnit %>%
+  dplyr::group_by(Year) %>%
+  plot_time_series(DATE,apothicPremiumUnit,
+                   .interactive=F,
+                   .facet_scales="free",
+                   .facet_ncol=2,
+                   .x_lab="Date",
+                   .y_lab="Apothic (Unit)")+
+  labs(title = "Fig. 2 Weekly Wine Sales by Year")
+```
+Monthly variation of sales is obvious.
+
+```{r}
+corrplot(cor(ApothicUnit[,c(2:8,10:16,18:25)]),
+         method="square",order="hclust",
+         title = "Fig. 3 Correlation Plot/Matrix of All Variables",
+         mar = c(1,3,1,1))
+```
+Note the extremely high correlation among many related variables.
+
+
+Select a subset of variables for prediction.
+```{r} 
+ApothicUnit_df = ApothicUnit %>%
+  dplyr::select(apothicPremiumUnit,PRCP.mean, TMIN.mean,AWND.mean,
+                SNOW.mean,SNWD.mean,Year, Month, WeekOfYear,WeekNo) 
+names(ApothicUnit_df)
+
+corrplot(cor(ApothicUnit_df[,2:6]),method="number",order="hclust",
+         title = "Fig. 4 Correlation Plot/Matrix of Selected Variables",
+         mar = c(1,3,1,1))
+```
+
+Check NAs and zero variance or near-zero variance
+```{r}
+apply(is.na(ApothicUnit_df),2,sum)
+nearZeroVar(ApothicUnit_df,names=T)
+```
+
+
+Plots of wine sales against weather variables
+```{r}
+ggplot(ApothicUnit_df,aes(x=PRCP.mean,y=apothicPremiumUnit))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  geom_smooth(method="loess",se=F,color="red")
+ggplot(ApothicUnit_df,aes(x=TMIN.mean,y=apothicPremiumUnit))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  geom_smooth(method="loess",se=F,color="red")
+ggplot(ApothicUnit_df,aes(x=AWND.mean,y=apothicPremiumUnit))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  geom_smooth(method="loess",se=F,color="red")
+ggplot(ApothicUnit_df,aes(x=SNOW.mean,y=apothicPremiumUnit))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  geom_smooth(method="loess",se=F,color="red")
+ggplot(ApothicUnit_df,aes(x=SNWD.mean,y=apothicPremiumUnit))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  geom_smooth(method="loess",se=F,color="red")
+```
+
+Check time series autocorrelation.
+```{r}
+lag2.plot(as.ts(ApothicUnit_df$apothicPremiumUnit),
+          as.ts(ApothicUnit_df$PRCP.mean),
+          max.lag=15)
+lag2.plot(as.ts(ApothicUnit_df$apothicPremiumUnit),
+          as.ts(ApothicUnit_df$TMIN.mean),
+          max.lag=15)
+lag2.plot(as.ts(ApothicUnit_df$apothicPremiumUnit),
+          as.ts(ApothicUnit_df$AWND.mean),
+          max.lag=15)
+lag2.plot(as.ts(ApothicUnit_df$apothicPremiumUnit),
+          as.ts(ApothicUnit_df$SNOW.mean),
+          max.lag=15)
+lag2.plot(as.ts(ApothicUnit_df$apothicPremiumUnit),
+          as.ts(ApothicUnit_df$SNWD.mean),
+          max.lag=15)
+```
+
+
+## 6 Create Dummy Holiday Variables
+```{r}
+ApothicUnit_df$week.end = seq(as.Date("2012-01-15"),as.Date("2017-12-31"),by="1 week")
+ApothicUnit_df$week.start = ApothicUnit_df$week.end - 7
+```
+
+Christmas
+```{r}
+Christmas.Dates = timeDate::ChristmasDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$Christmas[i] =  ifelse(length(base::intersect(week,as.Date(Christmas.Dates))) == 0,0,1)
+}
+```
+
+Thanksgiving
+```{r}
+ThanksgivingDay.Dates = timeDate::USThanksgivingDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$ThanksgivingDay[i] = ifelse(length(base::intersect(week,as.Date(ThanksgivingDay.Dates))) == 0,0,1)
+}
+```
+
+New Year's day
+```{r}
+NewYearsDay.Dates = timeDate::NewYearsDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$NewYearsDay[i] = ifelse(length(base::intersect(week,as.Date(NewYearsDay.Dates))) == 0,0,1)
+}
+
+```
+Independence day
+```{r}
+IndependenceDay.Dates = timeDate::USIndependenceDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$IndependenceDay[i] = ifelse(length(base::intersect(week,as.Date(IndependenceDay.Dates))) == 0,0,1)
+}
+```
+
+Labor day
+```{r}
+LaborDay.Dates = timeDate::USLaborDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$LaborDay[i] = ifelse(length(base::intersect(week,as.Date(LaborDay.Dates))) == 0,0,1)
+}
+```
+
+Memorial day
+```{r}
+MemorialDay.Dates = timeDate::USMemorialDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$MemorialDay[i] = ifelse(length(base::intersect(week,as.Date(MemorialDay.Dates))) == 0,0,1)
+}
+```
+
+Presidents day
+```{r}
+PresidentsDay.Dates = timeDate::USPresidentsDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$PresidentsDay[i] = ifelse(length(base::intersect(week,as.Date(PresidentsDay.Dates))) == 0,0,1)
+}
+```
+
+MLKing'S day
+```{r}
+MLKingsBirthday.Dates = timeDate::USMLKingsBirthday(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$MLKingsBirthday[i] = ifelse(length(base::intersect(week,as.Date(MLKingsBirthday.Dates))) == 0,0,1)
+}
+```
+
+Veterans day
+```{r}
+VeteransDay.Dates = timeDate::USVeteransDay(min(ApothicUnit_df$Year):max(ApothicUnit_df$Year))
+for (i in 1:nrow(ApothicUnit_df)) {
+  week = seq(ApothicUnit_df[i,]$week.start+1,ApothicUnit_df[i,]$week.end,length.out=7)
+  ApothicUnit_df$VeteransDay[i] = ifelse(length(base::intersect(week,as.Date(VeteransDay.Dates))) == 0,0,1)
+}
+```
+
+## 7 Train and Test Data Split
+271 weeks for training and 40 weeks for testing.
+```{r}
+ApothicUnit_train = ApothicUnit_df[1:(nrow(ApothicUnit_df)-40),]
+ApothicUnit_test = ApothicUnit_df[(nrow(ApothicUnit_df)-40+1):nrow(ApothicUnit_df),]
+names(ApothicUnit_train)
+
+TS_Forecast_train_df = ApothicUnit_train %>%
+  dplyr::select(1:6,11) %>%
+  dplyr::rename("Apothic" = "apothicPremiumUnit")
+str(TS_Forecast_train_df)
+
+TS_Forecast_test_df = ApothicUnit_test %>%
+  dplyr::select(1,11) %>%
+  dplyr::rename("Apothic" = "apothicPremiumUnit")
+str(TS_Forecast_test_df)
+```
+
+## 8 Model Building and Testing
+### 8.1 SARIMA models
+logarithm transformation does not help too much.
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,1]))
+acf2(ts(TS_Forecast_train_df[,1]))
+
+plot.ts(log10(ts(TS_Forecast_train_df[,1])))  # seems better
+acf2(log10(ts(TS_Forecast_train_df[,1])))  # seems better
+```
+
+#### 8.1.1 SARIMA models without exogenous variables
+Autocorrelation strong after 15 lags.
+```{r}
+lag1.plot(ts(TS_Forecast_train_df[,1]),max.lag=15)
+```
+Perioditiy of 5 weeks?
+```{r}
+spectrum(ts(TS_Forecast_train_df[,1]),log="no")
+spectrum(ts(TS_Forecast_train_df[,1]),log="no",plot=F)
+```
+
+Autodetection of arima model (p,d,q = 0,1,2)
+```{r}
+auto.arima(TS_Forecast_train_df[,1],trace=T,ic="aicc",seasonal.test="hegy") 
+acf2(TS_Forecast_train_df[,1])  # ar3 is adequate?
+```
+
+Fitting model with p,d,q = 3,1,0
+```{r}
+sarima(ts(TS_Forecast_train_df[,1]),3,1,0)   
+sarima_model1_pred = sarima.for(ts(TS_Forecast_train_df[,1]),40,3,1,0)$pred 
+Metrics.fun(sarima_model1_pred,TS_Forecast_test_df[,1])
+```
+
+Fitting model with p,d,q = 0,1,2
+```{r}
+sarima(ts(TS_Forecast_train_df[,1]),0,1,2) # best model selected by auto.arima
+sarima_model2_pred = sarima.for(ts(TS_Forecast_train_df[,1]),40,0,1,2)$pred # 
+Metrics.fun(sarima_model2_pred,TS_Forecast_test_df[,1])
+```
+
+Fitting model with  p,d,q, P,D,Q,S = 3,1,0,1,0,0,52 (the best so far) 
+```{r}
+sarima_model3 = sarima(ts(TS_Forecast_train_df[,1]),3,1,0,1,0,0,S=52)
+sarima_model3_pred = sarima.for(ts(TS_Forecast_train_df[,1]),40,3,1,0,1,0,0,S=52)$pred
+Metrics.fun(sarima_model3_pred,TS_Forecast_test_df[,1])
+```
+
+#### 8.1.2 SARIMA models with exogenous variables
+One pro of using exogenous variables is that exogenous variables may significantly increase forecasting accuracy.
+One con of using exogenous variables is that all the exogenous variables for the forecasting periods need to be forecasted first.
+
+
+##### 8.1.2.1 Forecasting five weather variables for 40 weeks
+```{r}
+names(TS_Forecast_train_df)
+names(TS_Forecast_test_df)
+```
+
+PRCP.mean
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,2]))
+auto.arima(ts(TS_Forecast_train_df[,2]))
+sarima(ts(TS_Forecast_train_df[,2]),2,0,2,1,0,0,S=52)
+PRCP.sarima.S = sarima.for(ts(TS_Forecast_train_df[,2]),40,2,0,2,1,0,0,S=52)
+```
+
+TMIN.mean
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,3]))
+auto.arima(ts(TS_Forecast_train_df[,3]))
+sarima(ts(TS_Forecast_train_df[,3]),1,0,1,1,0,0,S=52)
+TMIN.sarima.S = sarima.for(ts(TS_Forecast_train_df[,3]),40,1,0,1,1,0,0,S=52)
+```
+
+
+AWND.mean
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,4]))
+auto.arima(ts(TS_Forecast_train_df[,4]))
+sarima(ts(TS_Forecast_train_df[,4]),1,0,1,1,0,0,S=52)
+AWND.sarima.S = sarima.for(ts(TS_Forecast_train_df[,4]),40,1,0,1,1,0,0,S=52)
+```
+
+
+SNOW.mean
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,5]))
+auto.arima(ts(TS_Forecast_train_df[,5]))
+sarima(ts(TS_Forecast_train_df[,5]),1,0,3,1,0,0,S=52)
+SNOW.sarima.S = sarima.for(ts(TS_Forecast_train_df[,5]),40,1,0,3,1,0,0,S=52)
+```
+
+SNWD.mean
+```{r}
+plot.ts(ts(TS_Forecast_train_df[,6]))
+auto.arima(ts(TS_Forecast_train_df[,6]))
+sarima(ts(TS_Forecast_train_df[,6]),1,0,5,1,0,0,S=52)
+SNWD.sarima.S = sarima.for(ts(TS_Forecast_train_df[,6]),40,1,0,5,1,0,0,S=52)
+```
+
+
+New data for forecasting
+```{r}
+names(ApothicUnit_train)
+names(ApothicUnit_test)
+
+newxreg = data.frame(PRCP.mean = PRCP.sarima.S$pred,
+                     TMIN.mean=TMIN.sarima.S$pred,
+                     AWND.mean=AWND.sarima.S$pred,
+                     SNOW.mean=SNOW.sarima.S$pred,
+                     SNWD.mean=SNWD.sarima.S$pred,
+                     Christmas=ApothicUnit_test$Christmas,
+                     NewYearsDay=ApothicUnit_test$NewYearsDay,
+                     IndependenceDay=ApothicUnit_test$IndependenceDay,
+                     LaborDay=ApothicUnit_test$LaborDay,
+                     ThanksgivingDay=ApothicUnit_test$ThanksgivingDay,
+                     MemorialDay=ApothicUnit_test$MemorialDay,
+                     PresidentsDay=ApothicUnit_test$PresidentsDay,
+                     MLKingsBirthday=ApothicUnit_test$MLKingsBirthday,
+                     VeteransDay=ApothicUnit_test$VeteransDay,
+                     WeekOfYear = ApothicUnit_test$WeekOfYear,
+                     WeekNo=ApothicUnit_test$WeekNo,
+                     Month=as.factor(ApothicUnit_test$Month),
+                     Year=ApothicUnit_test$Year)
+newxreg = newxreg %>%
+  dplyr::mutate(SNOW.Binary = ifelse(newxreg$SNOW.mean>=0.2,1,0),
+                SNWD.Binary = ifelse(newxreg$SNWD.mean>=2,1,0)) %>%
+  dplyr::mutate(SNOW.Binary.Back1 = c(SNOW.Binary[-1],0),
+                SNWD.Binary.Back1 = c(SNWD.Binary[-1],0)) %>%
+  as.data.frame()
+```
+
+str(newxreg)
+
+
+##### 8.1.2.2 Five weather variables as exogenous
+Model
+```{r}
+sarima_model3_exo = sarima(ts(TS_Forecast_train_df[,1]),0,1,2,1,0,0,S=52,
+                       xreg=TS_Forecast_train_df[,2:6])
+acf2(sarima_model3_exo$fit$residuals,max.lag=100)
+auto.arima(sarima_model3_exo$fit$residuals)
+```
+
+Prediction
+```{r}
+sarima_model3_exo_pred = sarima.for(ts(TS_Forecast_train_df[,1]),40,0,1,2,1,0,0,S=52,
+                                xreg=TS_Forecast_train_df[,2:6],
+                                newxreg=newxreg[,1:5])
+Metrics.fun(sarima_model3_exo_pred$pred,TS_Forecast_test_df[,1])  
+```
+Note
+(1) The performance of the model with five weather variables is worse than that with any exogenous variables.
+(2) Adding holidays does not improve model performance (data not shown).
+
+
+
+### 8.2 bsts (Bayesian Structural Time Series) models
+#### 8.2.1 Local level model with S=52
+```{r}
+ss = AddLocalLevel(list(),TS_Forecast_train_df[,1]) 
+ss = AddSeasonal(ss,TS_Forecast_train_df[,1],nseasons=52)
+bsts.Local.Level = bsts(TS_Forecast_train_df[,1],
+                        state.specification=ss,niter=1000)
+bsts.Local.Level.Pred = predict(bsts.Local.Level,horizon=40,burn=200)
+plot(bsts.Local.Level.Pred)
+Metrics.fun(bsts.Local.Level.Pred$mean,TS_Forecast_test_df[,1])
+```
+
