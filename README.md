@@ -1,20 +1,18 @@
 Weather on wine sales
 October 7, 2024
 
-\setlength{\leftskip}{2cm}
-
 # Objective
 The objective of the project is to forecast weekly wine sales using historical data. The description of the data and variables as follows.
 
 # Modeling methodologies
   Time domain approach, frequency domain approach, and machine learning models are utilized and compared. Specific methods include  
-  (1) Time domain approach  
-     (1.1) Classical time series approaches (e.g., arima and sarima);   
-     (1.2) Bayesian structural time series approach using R package "bsts"  
-  (2) Frequency domain approach  
-      (2.1) Classical statistical models using generalized least square regression using R package "nlme"  
-  (3) Machine learning algorithms  
-      (3.1) Machine learning using R package "forecastML"  
+## Time domain approach  
+   (1) Classical time series approaches (e.g., arima and sarima);   
+   (2) Bayesian structural time series approach using R package "bsts"  
+## Frequency domain approach  
+   (3) Classical statistical models using generalized least square regression using R package "nlme"  
+## Machine learning algorithms  
+   (4) Machine learning using R package "forecastML"  
                              
 # Data description
 ## Site/Location: Chicago O’Hare International Airport, IL
