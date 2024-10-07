@@ -15,7 +15,8 @@ The objective of the project is to forecast weekly wine sales using historical d
    (3) Classical statistical models using generalized least square regression using R package "nlme"  
 ## Machine learning algorithms  
    (4) Machine learning using R package "forecastML"    
-
+<br>
+<br>
                              
 # Data description
 ## Site/Location: Chicago O’Hare International Airport, IL
