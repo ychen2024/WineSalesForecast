@@ -3,7 +3,8 @@ October 7, 2024
 
 # Objective
 The objective of the project is to forecast weekly wine sales using historical data. The description of the data and variables as follows.  
-
+<br>
+<br>
 
 # Modeling methodologies
   Time domain approach, frequency domain approach, and machine learning models are utilized and compared. Specific methods include  
