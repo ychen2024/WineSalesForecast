@@ -2,7 +2,7 @@ Weather on wine sales
 October 7, 2024
 
 # Objective
-The objective of the project is to forecast weekly wine sales using historical data. The description of the data and variables as follows.
+The objective of the project is to forecast weekly wine sales using historical data. The description of the data and variables as follows. <br>
 
 # Modeling methodologies
   Time domain approach, frequency domain approach, and machine learning models are utilized and compared. Specific methods include  
@@ -12,7 +12,7 @@ The objective of the project is to forecast weekly wine sales using historical d
 ## Frequency domain approach  
    (3) Classical statistical models using generalized least square regression using R package "nlme"  
 ## Machine learning algorithms  
-   (4) Machine learning using R package "forecastML"  
+   (4) Machine learning using R package "forecastML"  <br>
                              
 # Data description
 ## Site/Location: Chicago O’Hare International Airport, IL
